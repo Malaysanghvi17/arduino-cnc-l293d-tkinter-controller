@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "calibrated": true,
+  "bounds": {
+    "x": 260,
+    "y": 240
+  },
+  "position": {
+    "x": 0,
+    "y": 0
+  },
+  "pen_state_down": false,
+  "enforce_bounds": true,
+  "swap_xy": true,
+  "invert_x": true,
+  "invert_y": true,
+  "step": 20,
+  "speed": 30,
+  "pen_up": 74,
+  "pen_down": 66,
+  "shape_size": 56,
+  "rings": 5
+}
