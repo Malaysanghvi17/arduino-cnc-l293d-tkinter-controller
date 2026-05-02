@@ -425,10 +425,6 @@ PCAL commands are sent as `PCAL D<angle>` and `PCAL U<angle>`. The firmware resp
 | Servo (signal) | 13 |
 | Power | External motor driver supply |
 
-<!-- ADD YOUR WIRING DIAGRAM HERE -->
-> 📷 **Wiring diagram**  
-> *(Replace with: `![Wiring Diagram](photos/wiring.jpg)`)*
-
 Default baud rate: **9600**. Change `baud_combo` default in code if your firmware uses 115200.
 
 ---
