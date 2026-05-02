@@ -1,0 +1,111 @@
+{
+  "auto_home": true,
+  "fit": "contain",
+  "align": "center",
+  "margin": 15,
+  "paths": [
+
+    { "label": "outer_circle", "pen": "down", "closed": true,
+      "points": [
+        [260,0],[184,184],[0,260],[-184,184],
+        [-260,0],[-184,-184],[0,-260],[184,-184]
+      ]
+    },
+
+    { "label": "ring_230", "pen": "down", "closed": true,
+      "points": [
+        [230,0],[163,163],[0,230],[-163,163],
+        [-230,0],[-163,-163],[0,-230],[163,-163]
+      ]
+    },
+
+    { "label": "ring_160", "pen": "down", "closed": true,
+      "points": [
+        [160,0],[113,113],[0,160],[-113,113],
+        [-160,0],[-113,-113],[0,-160],[113,-113]
+      ]
+    },
+
+    { "label": "ring_120", "pen": "down", "closed": true,
+      "points": [
+        [120,0],[85,85],[0,120],[-85,85],
+        [-120,0],[-85,-85],[0,-120],[85,-85]
+      ]
+    },
+
+    { "label": "ring_80", "pen": "down", "closed": true,
+      "points": [
+        [80,0],[57,57],[0,80],[-57,57],
+        [-80,0],[-57,-57],[0,-80],[57,-57]
+      ]
+    },
+
+    { "label": "ring_40", "pen": "down", "closed": true,
+      "points": [
+        [40,0],[28,28],[0,40],[-28,28],
+        [-40,0],[-28,-28],[0,-40],[28,-28]
+      ]
+    },
+
+    { "label": "crosshair_ns", "pen": "down", "closed": false,
+      "points": [[0,-260],[0,260]]
+    },
+    { "label": "crosshair_ew", "pen": "down", "closed": false,
+      "points": [[-260,0],[260,0]]
+    },
+    { "label": "crosshair_ne_sw", "pen": "down", "closed": false,
+      "points": [[184,-184],[-184,184]]
+    },
+    { "label": "crosshair_nw_se", "pen": "down", "closed": false,
+      "points": [[-184,-184],[184,184]]
+    },
+
+    { "label": "spike_N",   "pen": "down", "closed": true, "points": [[0,-230],[-12,-72],[0,-58],[12,-72]] },
+    { "label": "spike_S",   "pen": "down", "closed": true, "points": [[0,230],[-12,72],[0,58],[12,72]] },
+    { "label": "spike_E",   "pen": "down", "closed": true, "points": [[230,0],[72,-12],[58,0],[72,12]] },
+    { "label": "spike_W",   "pen": "down", "closed": true, "points": [[-230,0],[-72,-12],[-58,0],[-72,12]] },
+
+    { "label": "spike_NE",  "pen": "down", "closed": true, "points": [[163,-163],[72,-12],[58,0],[12,-72]] },
+    { "label": "spike_SE",  "pen": "down", "closed": true, "points": [[163,163],[12,72],[58,0],[72,12]] },
+    { "label": "spike_SW",  "pen": "down", "closed": true, "points": [[-163,163],[-72,12],[-58,0],[-12,72]] },
+    { "label": "spike_NW",  "pen": "down", "closed": true, "points": [[-163,-163],[-12,-72],[-58,0],[-72,-12]] },
+
+    { "label": "short_spike_NNE", "pen": "down", "closed": true,
+      "points": [[85,-197],[-8,-60],[0,-48],[8,-60]] },
+    { "label": "short_spike_ENE", "pen": "down", "closed": true,
+      "points": [[197,-85],[60,-8],[48,0],[60,8]] },
+    { "label": "short_spike_ESE", "pen": "down", "closed": true,
+      "points": [[197,85],[60,-8],[48,0],[60,8]] },
+    { "label": "short_spike_SSE", "pen": "down", "closed": true,
+      "points": [[85,197],[-8,60],[0,48],[8,60]] },
+    { "label": "short_spike_SSW", "pen": "down", "closed": true,
+      "points": [[-85,197],[-8,60],[0,48],[8,60]] },
+    { "label": "short_spike_WSW", "pen": "down", "closed": true,
+      "points": [[-197,85],[-60,-8],[-48,0],[-60,8]] },
+    { "label": "short_spike_WNW", "pen": "down", "closed": true,
+      "points": [[-197,-85],[-60,-8],[-48,0],[-60,8]] },
+    { "label": "short_spike_NNW", "pen": "down", "closed": true,
+      "points": [[-85,-197],[-8,-60],[0,-48],[8,-60]] },
+
+    { "label": "inner_octagon", "pen": "down", "closed": true,
+      "points": [
+        [0,-80],[57,-57],[80,0],[57,57],
+        [0,80],[-57,57],[-80,0],[-57,-57]
+      ]
+    },
+
+    { "label": "center_dot", "pen": "down", "closed": true,
+      "points": [[0,-16],[11,-11],[16,0],[11,11],[0,16],[-11,11],[-16,0],[-11,-11]]
+    },
+
+    { "label": "tick_0",   "pen": "down", "points": [[0,-260],[0,-242]] },
+    { "label": "tick_45",  "pen": "down", "points": [[184,-184],[171,-171]] },
+    { "label": "tick_90",  "pen": "down", "points": [[260,0],[242,0]] },
+    { "label": "tick_135", "pen": "down", "points": [[184,184],[171,171]] },
+    { "label": "tick_180", "pen": "down", "points": [[0,260],[0,242]] },
+    { "label": "tick_225", "pen": "down", "points": [[-184,184],[-171,171]] },
+    { "label": "tick_270", "pen": "down", "points": [[-260,0],[-242,0]] },
+    { "label": "tick_315", "pen": "down", "points": [[-184,-184],[-171,-171]] }
+
+  ]
+}

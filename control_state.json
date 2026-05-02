@@ -2,12 +2,12 @@
   "version": 2,
   "calibrated": true,
   "bounds": {
-    "x": 260,
-    "y": 240
+    "x": 280,
+    "y": 220
   },
   "position": {
-    "x": 0,
-    "y": 0
+    "x": 235,
+    "y": 20
   },
   "pen_state_down": false,
   "enforce_bounds": true,

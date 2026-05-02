@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox
+from tkinter import ttk, scrolledtext, messagebox, filedialog
 import json
 import queue
 import re
@@ -42,6 +42,8 @@ calibration_ready = False
 _loading_state    = False
 current_servo_angle = 90
 draw_in_progress   = False
+_draw_cancel       = False
+_last_preview_redraw = 0.0
 preview_origin_override = None
 preview_job = {
     "label": "",
@@ -263,12 +265,33 @@ def _clear_response_queue():
             return
 
 
+def _clamp_position_if_enforced(logical_x, logical_y):
+    """Clamp position to 0..max when bounds enforcement is active.
+    Returns (clamped_x, clamped_y, was_clamped)."""
+    try:
+        enforce = enforce_bounds_var.get()
+    except Exception:
+        return logical_x, logical_y, False
+    if not enforce:
+        return logical_x, logical_y, False
+    lim_x = max(1, _safe_int(bound_x_var.get(), 500, 1))
+    lim_y = max(1, _safe_int(bound_y_var.get(), 500, 1))
+    cx = max(0, min(lim_x, logical_x))
+    cy = max(0, min(lim_y, logical_y))
+    clamped = (cx != logical_x) or (cy != logical_y)
+    return cx, cy, clamped
+
+
 def _set_local_state_from_physical(phys_x, phys_y, pen_down, persist=True):
     global current_x, current_y, pen_is_down
     logical_x, logical_y = _physical_to_logical(phys_x, phys_y)
+    # Clamp to valid bounds when enforcement is on
+    cx, cy, was_clamped = _clamp_position_if_enforced(logical_x, logical_y)
+    if was_clamped:
+        log(f"[BOUNDS] Position clamped: ({logical_x},{logical_y}) → ({cx},{cy})", color=ACCENT3)
     with state_lock:
-        current_x   = logical_x
-        current_y   = logical_y
+        current_x   = cx
+        current_y   = cy
         pen_is_down = bool(pen_down)
     _set_servo_angle_display()
     if persist:
@@ -301,11 +324,15 @@ def _send_command_wait(cmd, timeout=15):
 
     deadline = time.time() + timeout
     while time.time() < deadline:
+        # Check if connection died while waiting
+        if not connected or ser is None:
+            log(f"[DISCONNECTED] Lost connection during {cmd}", color=ACCENT2)
+            return None
         remaining = max(0.05, deadline - time.time())
         try:
-            line = response_queue.get(timeout=remaining)
+            line = response_queue.get(timeout=min(remaining, 1.0))
         except queue.Empty:
-            break
+            continue
         parsed = _parse_ack_line(line)
         if parsed is not None:
             return parsed
@@ -394,8 +421,19 @@ def _load_state():
         size_var.set(str(max(5, _safe_int(data.get("shape_size"), 30, 5))))
         rings_var.set(max(1, _safe_int(data.get("rings"), 3, 1)))
         calibration_ready = bool(data.get("calibrated", False))
-        current_x   = _safe_int(position.get("x"), 0)
-        current_y   = _safe_int(position.get("y"), 0)
+        raw_x   = _safe_int(position.get("x"), 0)
+        raw_y   = _safe_int(position.get("y"), 0)
+        # Clamp loaded position to valid bounds (0..max)
+        lim_x_val = max(1, _safe_int(bounds.get("x"), 500, 1))
+        lim_y_val = max(1, _safe_int(bounds.get("y"), 500, 1))
+        if bool(data.get("enforce_bounds", False)):
+            current_x = max(0, min(lim_x_val, raw_x))
+            current_y = max(0, min(lim_y_val, raw_y))
+            if current_x != raw_x or current_y != raw_y:
+                log(f"[STATE] Position clamped on load: ({raw_x},{raw_y}) → ({current_x},{current_y})", color=ACCENT3)
+        else:
+            current_x = raw_x
+            current_y = raw_y
         pen_is_down = bool(data.get("pen_state_down", data.get("pen_down_state", False)))
         current_servo_angle = _safe_int(data.get("pen_down"), 30) if pen_is_down else _safe_int(data.get("pen_up"), 90)
     finally:
@@ -532,9 +570,26 @@ def _send_passthrough_command(cmd, label="RAW", timeout=20):
 
 
 def emergency_stop():
-    """Instantly kill all motion and signals."""
+    """Cancel any in-progress draw, try to raise pen, then hard-stop."""
+    global _draw_cancel
+    _draw_cancel = True
     log("[STOP] Emergency stop triggered!", color=ACCENT2)
-    _run_in_thread(_send_passthrough_command, "STOP", label="STOP", timeout=5)
+
+    def _do_stop():
+        # Try to raise pen gracefully first
+        try:
+            ack = _send_command_wait("PU", timeout=3)
+            if ack:
+                _set_local_state_from_physical(*ack)
+                log("[STOP] Pen raised successfully", color=ACCENT3)
+            else:
+                log("[STOP] Pen-up timed out, hard-stopping", color=ACCENT2)
+        except Exception:
+            pass
+        # Hard stop regardless
+        _send_passthrough_command("STOP", label="STOP", timeout=5)
+
+    _run_in_thread(_do_stop)
 
 
 def return_to_zero(label="ZERO"):
@@ -809,6 +864,7 @@ def _commit_preview_draw():
 
 
 def _run_draw_spec(spec, label="DRAW"):
+    global _draw_cancel, _last_preview_redraw
     if not _ensure_ready_for_draw(label):
         return False
     try:
@@ -831,15 +887,33 @@ def _run_draw_spec(spec, label="DRAW"):
     root.after(0, _redraw_preview_canvas)
     root.after(0, _refresh_preview_status)
 
+    _draw_cancel = False
+    _last_preview_redraw = time.time()
     _set_draw_busy(True, label=label)
     try:
-        with motion_lock:
-            if auto_home:
+        # Auto-home before starting
+        if auto_home:
+            with motion_lock:
+                if _draw_cancel:
+                    log(f"[{label}] Cancelled before start", color=ACCENT2)
+                    return False
                 if not return_to_zero(label=label):
                     return False
-            for path in planned:
-                path_points = path["points"]
-                draw_path = bool(path.get("draw", True))
+
+        for path_idx, path in enumerate(planned):
+            # Check cancel between each path (motion_lock released here)
+            if _draw_cancel:
+                log(f"[{label}] Cancelled at path {path_idx+1}/{len(planned)}", color=ACCENT2)
+                _set_pen(False, label=label)
+                return False
+            if not connected and ser is not None:
+                log(f"[{label}] Connection lost at path {path_idx+1}", color=ACCENT2)
+                return False
+
+            path_points = path["points"]
+            draw_path = bool(path.get("draw", True))
+
+            with motion_lock:
                 if not _set_pen(False, label=label):
                     return False
                 if not _move_to_absolute(*path_points[0], force_enforce=True):
@@ -850,23 +924,39 @@ def _run_draw_spec(spec, label="DRAW"):
                 if segment_delay:
                     time.sleep(segment_delay)
                 for point in path_points[1:]:
+                    if _draw_cancel:
+                        log(f"[{label}] Cancelled mid-path", color=ACCENT2)
+                        _set_pen(False, label=label)
+                        return False
                     if not _move_to_absolute(*point, force_enforce=True):
                         log(f"[{label}] Motion aborted before reaching {point}", color=ACCENT2)
                         return False
                     preview_job["segments_done"] += 1
-                    root.after(0, _refresh_preview_status)
-                    root.after(0, _redraw_preview_canvas)
+                    # Throttle preview redraws: every 5 segments or every 2 seconds
+                    now = time.time()
+                    if (preview_job["segments_done"] % 5 == 0
+                            or now - _last_preview_redraw >= 2.0
+                            or preview_job["segments_done"] == segment_count):
+                        _last_preview_redraw = now
+                        root.after(0, _refresh_preview_status)
+                        root.after(0, _redraw_preview_canvas)
                     if segment_delay:
                         time.sleep(segment_delay)
                 if draw_path and not _set_pen(False, label=label):
                     return False
-            if return_home:
+
+        if return_home:
+            with motion_lock:
                 if not return_to_zero(label=label):
                     return False
-            else:
-                _set_pen(False, label=label)
+        else:
+            _set_pen(False, label=label)
     finally:
+        _draw_cancel = False
         _set_draw_busy(False, label=label)
+        # Final canvas update
+        root.after(0, _refresh_preview_status)
+        root.after(0, _redraw_preview_canvas)
 
     log(f"[{label}] Complete", color=ACCENT3)
     return True
@@ -1423,13 +1513,14 @@ def _read_serial():
             line = ser.readline().decode(errors="ignore").strip()
             if line:
                 log(f"  << {line}", color=ACCENT3)
-                # Queue OK/ERR acks AND PCAL info lines so _pcal_send can parse them
-                if (line.startswith("OK ") or line.startswith("ERR ")
-                        or line.startswith("PEN_UP=")
-                        or line.startswith("NUDGE=")):
-                    response_queue.put(line)
+                # Queue all substantive lines so _send_command_wait can see them
+                # (OK acks, ERR, PCAL info, SPEED=, NUDGE=, etc.)
+                response_queue.put(line)
         except Exception:
             break
+    # Reader thread exiting — mark disconnected so _send_command_wait won't hang
+    if connected:
+        log("[SERIAL] Reader thread exited — connection may be lost", color=ACCENT2)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -1439,7 +1530,27 @@ root = tk.Tk()
 root.title("CNC Controller  //  Arduino")
 root.configure(bg=BG)
 root.geometry("1020x800")
+root.minsize(900, 700)
 root.resizable(True, True)
+
+# ── ttk dark-theme styling (critical for Linux/Ubuntu) ────────────────────
+_style = ttk.Style()
+_style.theme_use("clam")
+_style.configure("TCombobox",
+                  fieldbackground=PANEL, background=BORDER,
+                  foreground=TEXT, arrowcolor=ACCENT,
+                  selectbackground=CARD, selectforeground=TEXT,
+                  bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER)
+_style.map("TCombobox",
+           fieldbackground=[("readonly", PANEL), ("disabled", CARD)],
+           foreground=[("readonly", TEXT), ("disabled", MUTED)],
+           background=[("active", BORDER), ("pressed", CARD)])
+_style.configure("Vertical.TScrollbar",
+                  background=BORDER, troughcolor=PANEL,
+                  arrowcolor=ACCENT, bordercolor=BORDER,
+                  lightcolor=BORDER, darkcolor=BORDER)
+_style.map("Vertical.TScrollbar",
+           background=[("active", ACCENT), ("pressed", ACCENT)])
 
 # Header
 hdr = tk.Frame(root, bg=BG); hdr.pack(fill="x", padx=20, pady=(16,4))
@@ -1849,10 +1960,36 @@ json_card   = make_card(col2, "JSON DRAW API")
 json_btn_row = tk.Frame(json_card, bg=CARD); json_btn_row.pack(fill="x", padx=10, pady=(4,4))
 tk.Button(json_btn_row, text="▶ PREVIEW JSON", font=FONT_LABEL, bg=ACCENT3, fg=BTN_TEXT,
           relief="flat", padx=12, pady=4, command=draw_json_from_editor).pack(side="left")
-tk.Label(json_btn_row, text="pen:'up' = travel move",
+
+def _load_json_file():
+    """Open a file dialog to load a .json drawing file into the editor."""
+    fpath = filedialog.askopenfilename(
+        title="Load JSON Drawing",
+        filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+        initialdir=str(Path(__file__).with_name("drawings")),
+    )
+    if not fpath:
+        return
+    try:
+        text = Path(fpath).read_text(encoding="utf-8")
+        # Validate it's valid JSON
+        json.loads(text)
+        json_editor.delete("1.0", "end")
+        json_editor.insert("1.0", text)
+        log(f"[JSON] Loaded: {Path(fpath).name}", color=ACCENT3)
+    except json.JSONDecodeError as exc:
+        messagebox.showerror("Invalid JSON", f"File is not valid JSON:\n{exc}")
+    except Exception as exc:
+        messagebox.showerror("Load Error", str(exc))
+
+tk.Button(json_btn_row, text="📂 LOAD FILE", font=FONT_LABEL, bg=BORDER, fg=TEXT,
+          relief="flat", padx=10, pady=4, command=_load_json_file).pack(side="left", padx=(8, 0))
+tk.Label(json_btn_row, text="pen:'up' = travel",
          font=FONT_SMALL, bg=CARD, fg=MUTED).pack(side="left", padx=10)
 json_editor = scrolledtext.ScrolledText(json_card, height=12, font=FONT_SMALL,
-                                        bg=PANEL, fg=TEXT, relief="flat")
+                                        bg=PANEL, fg=TEXT, relief="flat",
+                                        insertbackground=ACCENT,
+                                        selectbackground=ACCENT, selectforeground=BG)
 json_editor.pack(fill="x", padx=10, pady=(0,6))
 _bind_mousewheel(json_editor, json_editor)
 json_editor.insert("1.0", json.dumps({
@@ -1869,48 +2006,29 @@ json_editor.insert("1.0", json.dumps({
 
 # (Draw Preview is now in col3 — see below)
 
-# ── COL 2: Command reference ──────────────────────────────────────────────────
-ref_card = make_card(col2, "COMMAND REFERENCE")
-ref_text = scrolledtext.ScrolledText(ref_card, height=14, font=FONT_SMALL,
-                                     bg=PANEL, fg=MUTED, relief="flat")
-ref_text.pack(fill="x", padx=10, pady=6)
-_bind_mousewheel(ref_text, ref_text)
-ref_text.insert("1.0", "\n".join([
-    "X<n>      move X (negative = reverse)",
-    "Y<n>      move Y (negative = reverse)",
-    "M<x,y>    diagonal move",
-    "PU / PD   pen up / pen down",
-    "PCAL U<n> set pen-UP angle (0-180)",
-    "PCAL D<n> set pen-DOWN angle (0-180)",
-    "PCAL N<n> nudge servo ±n degrees",
-    "PCAL?     query current pen angles",
-    "S<n>      set motor speed (RPM)",
-    "STOP      emergency stop / cut power",
-    "STATUS    read controller position",
-    "ZERO      mark current spot as origin",
-    "SQ<n>     draw square",
-    "TR<n>     draw triangle",
-    "DM<n>     draw diamond",
-    "RC<w,h>   draw rectangle",
-    "ZZ<n>     draw zigzag (4 repeats)",
-    "SP<n,r>   spiral  n=startSize  r=rings",
-    "DRAWJSON { ... }  safe JSON draw plan",
-    "RAW <cmd>  explicit pass-through to Arduino",
-    "HOME      drive back to (0,0)",
-    "",
-    "JSON keys: paths/points, area, fit, align, margin, origin",
-    "Per-path: use draw:false or pen:'up' for travel moves",
-    "fit=auto keeps size unless too big, contain fills area",
-    "Pins: Motor X = 5,6,7,8",
-    "      Motor Y = 9,10,11,12",
-    "      Servo   = 13",
-    "Speed: 50 RPM",
-    "",
-    "ZERO HERE  marks current spot as (0,0)",
-    "CALIBRATE  jog to corner, SET X/Y limits",
-    "Shapes, demos, and JSON plans stay inside saved bounds",
-]))
-ref_text.config(state="disabled")
+# ── Global Keyboard Shortcuts (Linux Tkinter fixes) ─────────────────────────
+def _bind_linux_shortcuts(widget):
+    """Bind Ctrl+A, Ctrl+C, Ctrl+V for Linux Tkinter text widgets."""
+    def select_all(event):
+        event.widget.tag_add("sel", "1.0", "end")
+        return "break"
+    def select_all_entry(event):
+        event.widget.select_range(0, "end")
+        event.widget.icursor("end")
+        return "break"
+    if isinstance(widget, (tk.Text, scrolledtext.ScrolledText)):
+        widget.bind("<Control-a>", select_all)
+        widget.bind("<Control-A>", select_all)
+    elif isinstance(widget, tk.Entry):
+        widget.bind("<Control-a>", select_all_entry)
+        widget.bind("<Control-A>", select_all_entry)
+
+def _recursive_bind_shortcuts(widget):
+    _bind_linux_shortcuts(widget)
+    for child in widget.winfo_children():
+        _recursive_bind_shortcuts(child)
+
+root.bind("<Map>", lambda e: _recursive_bind_shortcuts(root), add="+")
 
 # ── COL 3: Draw Preview (above console) ──────────────────────────────────────
 preview_card = make_card(col3, "DRAW PREVIEW  (drag to reposition · confirm to draw)")
@@ -1950,6 +2068,49 @@ tk.Button(con_btns, text="CLEAR", font=FONT_SMALL, bg=BORDER, fg=TEXT,
           relief="flat", padx=12, pady=3, command=clear_console).pack(side="left")
 tk.Label(con_btns, text="green = sent  |  yellow = received  |  red = error",
          font=FONT_SMALL, bg=CARD, fg=MUTED).pack(side="left", padx=12)
+
+# ── COL 3: Command reference ──────────────────────────────────────────────────
+ref_card = make_card(col3, "COMMAND REFERENCE")
+ref_text = scrolledtext.ScrolledText(ref_card, height=10, font=FONT_SMALL,
+                                     bg=PANEL, fg=MUTED, relief="flat")
+ref_text.pack(fill="x", padx=10, pady=6)
+_bind_mousewheel(ref_text, ref_text)
+ref_text.insert("1.0", "\n".join([
+    "X<n>      move X (negative = reverse)",
+    "Y<n>      move Y (negative = reverse)",
+    "M<x,y>    diagonal move",
+    "PU / PD   pen up / pen down",
+    "PCAL U<n> set pen-UP angle (0-180)",
+    "PCAL D<n> set pen-DOWN angle (0-180)",
+    "PCAL N<n> nudge servo ±n degrees",
+    "PCAL?     query current pen angles",
+    "S<n>      set motor speed (RPM)",
+    "STOP      emergency stop / cut power",
+    "STATUS    read controller position",
+    "ZERO      mark current spot as origin",
+    "SQ<n>     draw square",
+    "TR<n>     draw triangle",
+    "DM<n>     draw diamond",
+    "RC<w,h>   draw rectangle",
+    "ZZ<n>     draw zigzag (4 repeats)",
+    "SP<n,r>   spiral  n=startSize  r=rings",
+    "DRAWJSON { ... }  safe JSON draw plan",
+    "RAW <cmd>  explicit pass-through to Arduino",
+    "HOME      drive back to (0,0)",
+    "",
+    "JSON keys: paths/points, area, fit, align, margin, origin",
+    "Per-path: use draw:false or pen:'up' for travel moves",
+    "fit=auto keeps size unless too big, contain fills area",
+    "Pins: Motor X = 5,6,7,8",
+    "      Motor Y = 9,10,11,12",
+    "      Servo   = 13",
+    "Speed: 50 RPM",
+    "",
+    "ZERO HERE  marks current spot as (0,0)",
+    "CALIBRATE  jog to corner, SET X/Y limits",
+    "Shapes, demos, and JSON plans stay inside saved bounds",
+]))
+ref_text.config(state="disabled")
 
 # Status bar
 bar = tk.Frame(root, bg=PANEL, pady=4); bar.pack(fill="x", padx=20, pady=(0,8))
